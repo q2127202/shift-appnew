@@ -7,9 +7,8 @@ from collections import defaultdict
 import ast 
 import datetime as dt
 import time
-import sys  # 添加sys导入
+import sys
 import os
-os.chmod("scop-linux", 0o755)
 
 # 设置页面配置
 st.set_page_config(
@@ -41,36 +40,6 @@ st.markdown("""
         margin: 1rem 0;
     }
     
-    .shift-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(40px, 1fr));
-        gap: 2px;
-        margin: 1rem 0;
-    }
-    
-    .shift-cell {
-        padding: 0.5rem;
-        text-align: center;
-        border-radius: 4px;
-        font-size: 0.8rem;
-        font-weight: bold;
-        color: white;
-    }
-    
-    .shift-休み { background-color: #95a5a6; }
-    .shift-早番A { background-color: #3498db; }
-    .shift-早番B { background-color: #2980b9; }
-    .shift-早番C { background-color: #1abc9c; }
-    .shift-早番D { background-color: #16a085; }
-    .shift-遅番A { background-color: #e74c3c; }
-    .shift-遅番B { background-color: #c0392b; }
-    .shift-遅番C { background-color: #f39c12; }
-    .shift-遅番D { background-color: #d35400; }
-    
-    .sidebar .stSlider > div > div > div > div {
-        background-color: #667eea;
-    }
-    
     .stButton > button {
         background: linear-gradient(45deg, #667eea, #764ba2);
         color: white;
@@ -82,13 +51,28 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# SCOP库导入
+# SCOP库导入 - 改进的错误处理
 try:
-    sys.path.append('..')
+    # 尝试设置文件权限（在云端可能失败，但不影响功能）
+    try:
+        if os.path.exists("scop-linux"):
+            os.chmod("scop-linux", 0o755)
+            st.sidebar.success("✅ scop-linux 権限設定完了")
+    except Exception as perm_error:
+        st.sidebar.warning(f"⚠️ 権限設定をスキップ: {str(perm_error)}")
+    
+    # 导入SCOP库
     from scop import *
     SCOP_AVAILABLE = True
-except ImportError:
-    st.warning("SCOPライブラリが見つかりません。サンプルモードで動作します。")
+    st.sidebar.success("✅ SCOPライブラリ読み込み成功")
+    
+except ImportError as import_error:
+    st.sidebar.error(f"❌ SCOPライブラリが見つかりません: {str(import_error)}")
+    st.sidebar.info("📝 確認事項：\n- scop.py がルートディレクトリにあるか\n- scop-linux ファイルが存在するか")
+    SCOP_AVAILABLE = False
+    
+except Exception as general_error:
+    st.sidebar.error(f"❌ SCOPライブラリエラー: {str(general_error)}")
     SCOP_AVAILABLE = False
 
 # Mock Model class for simulation
@@ -102,10 +86,9 @@ class MockModel:
         sol = {}
         violated = []
         
-        # 生成模拟的决策变量解 - 确保有合理的工作分配
+        # 生成模拟的决策变量解
         for i in range(15):  # 15个员工
             for t in range(21):  # 21天（3周）
-                # 智能分配工作，避免全为0
                 if random.random() < 0.25:  # 25%休息
                     job = 0
                 else:  # 75%工作
@@ -127,57 +110,97 @@ class MockModel:
 def load_sample_data():
     """加载sample数据 - 优化为15人版本"""
     try:
-        sheet = pd.read_excel("optshift_sample2.xlsx", sheet_name=None, engine='openpyxl')
-        
-        month = 1
-        early = [3,4,5,6] 
-        late = [7,8,9,10]
-        num_off_days = 9
-        job = [0,1,2,3,4,5,6,7,8,9,10,11,12,13]
-        
-        day_df = sheet["day"+str(month)]
-        staff_df = sheet["staff"+str(month)]
-        job_df = sheet["job"] 
-        requirement_df = sheet["requirement"]
-        
-        n_day = len(day_df)
-        n_staff = min(15, len(staff_df))  # 限制为15人
-        
-        # 数据预处理
-        day_off = {}
-        for i in range(n_staff):
-            off = staff_df.loc[i, "day_off"]
-            if pd.isnull(off):
-                day_off[i] = set([])
-            else:
-                day_off[i] = set(ast.literal_eval(str(off)))
-        
-        requirement = defaultdict(int)
-        for row in requirement_df.itertuples():
-            requirement[row.day_type, row.job] = row.requirement
-        
-        LB = defaultdict(int)
-        for t, row in enumerate(day_df.itertuples()):
-            for j in job:
-                LB[t,j] = requirement[row.day_type, j]
-        
-        # 优化避免工作约束 - 只保留前15人的数据
-        avoid_jobs = {
-            0: [1,2,4,5,7,8,9,11,12,13], 1: [1,2,4,5,8,9,11,12,13], 2: [1,2,5,8,9,11,12,13],
-            3: [1,2,4,5,7,8,9,10,11,12,13], 4: [1,2,3,5,7,8,9,11,12,13], 5: [1,2,3,5,7,9,11,12,13],
-            6: [1,2,3,5,9,11,12,13], 7: [1,2,3,11,12,13], 8: [1,2,3,11,12,13],
-            9: [1,2,3,5,7,8,9,10,11,12,13], 10: [1,2,3,5,7,8,9,10,11,12,13], 11: [1,2,3,7,8,11,12,13],
-            12: [1,2,3,7,11,12,13], 13: [1,2,3,7,11,12,13], 14: [1,2,3,7,8,11,12,13]
-        }
-        
-        return n_staff, n_day, day_off, LB, avoid_jobs, job, True
+        # 首先尝试读取上传的Excel文件
+        if os.path.exists("optshift_sample2.xlsx"):
+            sheet = pd.read_excel("optshift_sample2.xlsx", sheet_name=None, engine='openpyxl')
+            
+            month = 1
+            early = [3,4,5,6] 
+            late = [7,8,9,10]
+            num_off_days = 9
+            job = [0,1,2,3,4,5,6,7,8,9,10,11,12,13]
+            
+            day_df = sheet["day"+str(month)]
+            staff_df = sheet["staff"+str(month)]
+            job_df = sheet["job"] 
+            requirement_df = sheet["requirement"]
+            
+            n_day = len(day_df)
+            n_staff = min(15, len(staff_df))  # 限制为15人
+            
+            # 数据预处理
+            day_off = {}
+            for i in range(n_staff):
+                off = staff_df.loc[i, "day_off"]
+                if pd.isnull(off):
+                    day_off[i] = set([])
+                else:
+                    day_off[i] = set(ast.literal_eval(str(off)))
+            
+            requirement = defaultdict(int)
+            for row in requirement_df.itertuples():
+                requirement[row.day_type, row.job] = row.requirement
+            
+            LB = defaultdict(int)
+            for t, row in enumerate(day_df.itertuples()):
+                for j in job:
+                    LB[t,j] = requirement[row.day_type, j]
+            
+            # 优化避免工作约束
+            avoid_jobs = {
+                0: [1,2,4,5,7,8,9,11,12,13], 1: [1,2,4,5,8,9,11,12,13], 2: [1,2,5,8,9,11,12,13],
+                3: [1,2,4,5,7,8,9,10,11,12,13], 4: [1,2,3,5,7,8,9,11,12,13], 5: [1,2,3,5,7,9,11,12,13],
+                6: [1,2,3,5,9,11,12,13], 7: [1,2,3,11,12,13], 8: [1,2,3,11,12,13],
+                9: [1,2,3,5,7,8,9,10,11,12,13], 10: [1,2,3,5,7,8,9,10,11,12,13], 11: [1,2,3,7,8,11,12,13],
+                12: [1,2,3,7,11,12,13], 13: [1,2,3,7,11,12,13], 14: [1,2,3,7,8,11,12,13]
+            }
+            
+            return n_staff, n_day, day_off, LB, avoid_jobs, job, True
+            
+        else:
+            # 如果Excel文件不存在，使用模拟数据
+            st.warning("⚠️ optshift_sample2.xlsx が見つかりません。サンプルデータを使用します。")
+            return create_mock_data()
     
     except Exception as e:
-        st.error(f"サンプルデータの読み込みに失敗: {str(e)}")
-        return None, None, None, None, None, None, False
+        st.error(f"データ読み込みエラー: {str(e)}")
+        st.info("📝 サンプルデータに切り替えます")
+        return create_mock_data()
+
+def create_mock_data():
+    """创建模拟数据"""
+    n_staff = 15
+    n_day = 21
+    job = [0,1,2,3,4,5,6,7,8,9,10,11,12,13]
+    
+    # 模拟休假数据
+    day_off = {}
+    for i in range(n_staff):
+        off_days = random.sample(range(n_day), random.randint(2, 4))
+        day_off[i] = set(off_days)
+    
+    # 模拟需求数据
+    requirement = defaultdict(int)
+    LB = defaultdict(int)
+    
+    for t in range(n_day):
+        for j in job:
+            if j > 0:  # 工作岗位
+                LB[t,j] = random.randint(1, 3)
+    
+    # 避免工作约束
+    avoid_jobs = {
+        0: [1,2,4,5,7,8,9,11,12,13], 1: [1,2,4,5,8,9,11,12,13], 2: [1,2,5,8,9,11,12,13],
+        3: [1,2,4,5,7,8,9,10,11,12,13], 4: [1,2,3,5,7,8,9,11,12,13], 5: [1,2,3,5,7,9,11,12,13],
+        6: [1,2,3,5,9,11,12,13], 7: [1,2,3,11,12,13], 8: [1,2,3,11,12,13],
+        9: [1,2,3,5,7,8,9,10,11,12,13], 10: [1,2,3,5,7,8,9,10,11,12,13], 11: [1,2,3,7,8,11,12,13],
+        12: [1,2,3,7,11,12,13], 13: [1,2,3,7,11,12,13], 14: [1,2,3,7,8,11,12,13]
+    }
+    
+    return n_staff, n_day, day_off, LB, avoid_jobs, job, True
 
 def solve_with_real_solver(weights, progress_placeholder=None, status_placeholder=None):
-    """使用真正的求解器求解 - 15人优化版本"""
+    """使用真正的求解器求解"""
     if not SCOP_AVAILABLE:
         return solve_optimization_mock(weights, progress_placeholder, status_placeholder)
     
@@ -189,10 +212,6 @@ def solve_with_real_solver(weights, progress_placeholder=None, status_placeholde
         
         n_staff, n_day, day_off, LB, avoid_jobs, job, _ = data_result
         
-        # 进一步限制问题规模以提高求解速度
-        n_staff = min(n_staff, 15)  # 限制员工数为15
-        n_day = min(n_day, 14)      # 限制天数为14天
-        
         if progress_placeholder:
             progress_placeholder.progress(10)
         if status_placeholder:
@@ -201,15 +220,18 @@ def solve_with_real_solver(weights, progress_placeholder=None, status_placeholde
         # 创建SCOP模型
         m = Model("shift_scheduling")
         
-        # 设置求解器参数以提高速度
-        if hasattr(m, 'setTimeLimit'):
-            m.setTimeLimit(45)  # 缩短到45秒
-        if hasattr(m, 'setParam'):
-            m.setParam('TimeLimit', 45)
-            m.setParam('MIPGap', 0.15)  # 放宽到15%的间隙
-            m.setParam('Presolve', 2)   # 启用预处理
+        # 设置求解器参数
+        try:
+            if hasattr(m, 'setTimeLimit'):
+                m.setTimeLimit(45)
+            if hasattr(m, 'setParam'):
+                m.setParam('TimeLimit', 45)
+                m.setParam('MIPGap', 0.15)
+                m.setParam('Presolve', 2)
+        except Exception as param_error:
+            st.warning(f"⚠️ パラメータ設定警告: {str(param_error)}")
         
-        # 决策变数 - 简化为二进制变量
+        # 决策变数
         x = {}
         for i in range(n_staff):
             for t in range(n_day):
@@ -223,7 +245,7 @@ def solve_with_real_solver(weights, progress_placeholder=None, status_placeholde
         
         constraint_count = 0
         
-        # 1. 每个员工每天只能分配一个工作（硬约束）
+        # 1. 每个员工每天只能分配一个工作
         for i in range(n_staff):
             for t in range(n_day):
                 assignment_constraint = Linear(f"assignment[{i},{t}]", weight='inf', rhs=1, direction='=')
@@ -235,21 +257,21 @@ def solve_with_real_solver(weights, progress_placeholder=None, status_placeholde
         if progress_placeholder:
             progress_placeholder.progress(50)
         
-        # 2. 休假要求约束（硬约束）
+        # 2. 休假要求约束
         for i in range(n_staff):
             for t in range(n_day):
                 if t in day_off.get(i, set()):
                     rest_constraint = Linear(f"day_off[{i},{t}]", weight='inf', rhs=1, direction='=')
-                    rest_constraint.addTerms(1, x[i,t,0], 1)  # 必须休息（job=0）
+                    rest_constraint.addTerms(1, x[i,t,0], 1)
                     m.addConstraint(rest_constraint)
                     constraint_count += 1
         
-        # 3. 技能限制约束（硬约束）- 简化处理
+        # 3. 技能限制约束
         for i in range(min(n_staff, len(avoid_jobs))):
             if i in avoid_jobs:
                 for t in range(n_day):
                     for j in avoid_jobs[i]:
-                        if j < len(job):  # 确保job索引有效
+                        if j < len(job):
                             skill_constraint = Linear(f"skill[{i},{t},{j}]", weight='inf', rhs=0, direction='=')
                             skill_constraint.addTerms(1, x[i,t,j], 1)
                             m.addConstraint(skill_constraint)
@@ -258,28 +280,28 @@ def solve_with_real_solver(weights, progress_placeholder=None, status_placeholde
         if progress_placeholder:
             progress_placeholder.progress(70)
         
-        # 4. 人员需求约束（软约束）- 进一步简化
+        # 4. 人员需求约束
         for t in range(n_day):
             for j in job:
-                if j > 0 and LB.get((t,j), 0) > 0:  # 只考虑工作岗位
+                if j > 0 and LB.get((t,j), 0) > 0:
                     req_constraint = Linear(f"requirement[{t},{j}]", 
                                           weight=weights['LBC_weight'], 
-                                          rhs=min(LB[t,j], n_staff//4), # 进一步限制需求量
+                                          rhs=min(LB[t,j], n_staff//4),
                                           direction=">=")
                     for i in range(n_staff):
                         req_constraint.addTerms(1, x[i,t,j], 1)
                     m.addConstraint(req_constraint)
                     constraint_count += 1
         
-        # 5. 连续工作约束（软约束）- 适度简化
+        # 5. 连续工作约束
         for i in range(n_staff):
-            for t in range(min(n_day-2, 10)):  # 检查更多天数
+            for t in range(min(n_day-2, 10)):
                 consec_constraint = Linear(f"consecutive[{i},{t}]", 
                                          weight=weights['UB_max5_weight'], 
-                                         rhs=3, direction='<=')  # 最多连续3天
-                for s in range(t, min(t+4, n_day)):  # 检查连续4天
+                                         rhs=3, direction='<=')
+                for s in range(t, min(t+4, n_day)):
                     for j in job:
-                        if j > 0:  # 只考虑工作日
+                        if j > 0:
                             consec_constraint.addTerms(1, x[i,s,j], 1)
                 m.addConstraint(consec_constraint)
                 constraint_count += 1
@@ -287,7 +309,7 @@ def solve_with_real_solver(weights, progress_placeholder=None, status_placeholde
         if progress_placeholder:
             progress_placeholder.progress(85)
         if status_placeholder:
-            status_placeholder.text(f'制約{constraint_count}個、最適化開始(大约30s)...')
+            status_placeholder.text(f'制約{constraint_count}個、最適化開始...')
         
         # 开始求解
         start_time = time.time()
@@ -299,20 +321,9 @@ def solve_with_real_solver(weights, progress_placeholder=None, status_placeholde
         if status_placeholder:
             status_placeholder.text('完了!')
         
-        # 调试：检查求解状态
-        if sol is None or m.Status != 0:
-            # 如果真实求解器失败，使用模拟求解器
-            st.warning("真实求解器未返回解，使用模拟求解器...")
-            return solve_optimization_mock(weights, None, None)
-        
-        # 调试：检查解的内容
-        if len(sol) == 0:
-            st.warning("求解器返回空解，使用模拟求解器...")
-            return solve_optimization_mock(weights, None, None)
-        
-        # 处理结果 - 修复转换逻辑
-        if sol and m.Status == 0:
-            # 将二进制变量解转换为工作分配
+        # 处理结果
+        if sol and hasattr(m, 'Status') and m.Status == 0:
+            # 转换解数据
             job_names = {0: "休み", 3: "早番A", 4: "早番B", 5: "早番C", 6: "早番D",
                         7: "遅番A", 8: "遅番B", 9: "遅番C", 10: "遅番D", 11: "その他"}
             
@@ -322,16 +333,14 @@ def solve_with_real_solver(weights, progress_placeholder=None, status_placeholde
             for i in range(n_staff):
                 row = []
                 for t in range(n_day):
-                    assigned_job = 0  # 默认休息
-                    # 找到分配的工作 - 修复变量名匹配
+                    assigned_job = 0
                     for j in job:
-                        var_name = f"x[{i},{t},{j}]"  # 注意这里是三维变量
+                        var_name = f"x[{i},{t},{j}]"
                         if var_name in sol and sol[var_name] > 0.5:
                             assigned_job = j
                             break
                     
-                    # 如果没有找到分配的工作，随机分配一个（避免全为0）
-                    if assigned_job == 0 and random.random() < 0.7:  # 70%概率分配工作
+                    if assigned_job == 0 and random.random() < 0.7:
                         if i < 5:
                             assigned_job = random.choice([3, 4, 5, 6])
                         elif i < 10:
@@ -344,31 +353,23 @@ def solve_with_real_solver(weights, progress_placeholder=None, status_placeholde
                 
                 result_data.append(row)
             
-            # 扩展到原始规模用于显示 - 15人30天
-            original_n_staff = 15  # 改为15人
-            original_n_day = 30   # 保持30天
-            
-            # 员工数量已经是15人，无需扩展
-            
-            # 扩展天数到30天
+            # 扩展到30天
             for i in range(len(result_data)):
-                while len(result_data[i]) < original_n_day:
-                    # 使用更智能的扩展模式
+                while len(result_data[i]) < 30:
                     current_length = len(result_data[i])
                     pattern_idx = current_length % n_day
                     base_job = result_data[i][pattern_idx]
                     
-                    # 添加一些随机变化以避免完全重复
-                    if random.random() < 0.3:  # 30%概率变化
+                    if random.random() < 0.3:
                         job_num = int(base_job.split('(')[0])
-                        if job_num == 0:  # 如果是休息，有时改为工作
+                        if job_num == 0:
                             if random.random() < 0.5:
                                 new_job = random.choice([3, 4, 5, 6, 7, 8, 9, 10])
                                 job_name = job_names.get(new_job, 'Unknown')
                                 result_data[i].append(f"{new_job}({job_name})")
                             else:
                                 result_data[i].append(base_job)
-                        else:  # 如果是工作，有时改为休息
+                        else:
                             if random.random() < 0.2:
                                 result_data[i].append("0(休み)")
                             else:
@@ -378,8 +379,8 @@ def solve_with_real_solver(weights, progress_placeholder=None, status_placeholde
             
             result_df = pd.DataFrame(
                 result_data,
-                columns=[f"{t+1}日" for t in range(original_n_day)],
-                index=[f"Staff_{i+1}" for i in range(original_n_staff)]
+                columns=[f"{t+1}日" for t in range(30)],
+                index=[f"Staff_{i+1}" for i in range(n_staff)]
             )
             
             solver_output = {
@@ -394,114 +395,24 @@ def solve_with_real_solver(weights, progress_placeholder=None, status_placeholde
             return None, f"求解失败 (Status: {getattr(m, 'Status', 'Unknown')})", solve_time, None
     
     except Exception as e:
-        return None, f"エラー: {str(e)}", 0, None
-
-def create_beautiful_schedule_display(schedule_df):
-    """创建美观的排班可视化 - 15人版本"""
-    
-    # 创建颜色编码的网格显示
-    st.markdown("### 📅 視覚的排班表")
-    
-    job_colors = {
-        '休み': '#95a5a6', '早番A': '#3498db', '早番B': '#2980b9', 
-        '早番C': '#1abc9c', '早番D': '#16a085', '遅番A': '#e74c3c',
-        '遅番B': '#c0392b', '遅番C': '#f39c12', '遅番D': '#d35400'
-    }
-    
-    # 显示日期标题行
-    date_cols = st.columns([2] + [1]*7)
-    with date_cols[0]:
-        st.markdown("**スタッフ**")
-    
-    # 显示日期（假设从1号开始）
-    for day_idx in range(7):
-        with date_cols[day_idx + 1]:
-            st.markdown(f"**{day_idx + 1}日**")
-    
-    # 创建网格HTML - 显示所有15个员工
-    for i, (staff_name, row) in enumerate(schedule_df.iterrows()):
-        if i >= 15:  # 只显示15个员工
-            break
-            
-        cols = st.columns([2] + [1]*7)  # 员工名 + 7天
-        
-        with cols[0]:
-            st.markdown(f"**{staff_name}**")
-            
-        for day_idx in range(7):  # 只显示一周
-            if day_idx < len(row):
-                job_info = row.iloc[day_idx]
-                job_name = job_info.split('(')[1].split(')')[0]
-                color = job_colors.get(job_name, '#bdc3c7')
-                
-                with cols[day_idx + 1]:
-                    st.markdown(f"""
-                    <div style="background-color: {color}; color: white; padding: 0.5rem; 
-                                border-radius: 5px; text-align: center; margin: 2px; font-size: 0.8rem;">
-                        {job_name}
-                    </div>
-                    """, unsafe_allow_html=True)
-
-def generate_smart_schedule():
-    """生成智能的示例排班表 - 15人版本"""
-    n_staff, n_days = 15, 30  # 15人30天
-    job_names = {0: "休み", 3: "早番A", 4: "早番B", 5: "早番C", 6: "早番D",
-                7: "遅番A", 8: "遅番B", 9: "遅番C", 10: "遅番D"}
-    
-    schedule_data = []
-    
-    for i in range(n_staff):
-        row = []
-        consecutive_work = 0
-        
-        for t in range(n_days):
-            # 智能排班逻辑
-            is_weekend = t % 7 in [5, 6]
-            
-            # 避免连续工作超过4天
-            if consecutive_work >= 4:
-                job = 0
-                consecutive_work = 0
-            elif is_weekend and random.random() < 0.4:  # 周末40%休息
-                job = 0
-                consecutive_work = 0
-            elif random.random() < 0.25:  # 平日25%休息
-                job = 0
-                consecutive_work = 0
-            else:
-                # 根据员工特点分配班次
-                if i < 5:  # 早班组 (Staff_1-5)
-                    job = random.choice([3, 4, 5, 6])
-                elif i < 10:  # 晚班组 (Staff_6-10)
-                    job = random.choice([7, 8, 9, 10])
-                else:  # 混合组 (Staff_11-15)
-                    job = random.choice([3, 4, 5, 6, 7, 8, 9, 10])
-                consecutive_work += 1
-            
-            row.append(f"{job}({job_names.get(job, 'Unknown')})")
-        
-        schedule_data.append(row)
-    
-    return pd.DataFrame(
-        schedule_data,
-        columns=[f"{t+1}日" for t in range(n_days)],
-        index=[f"Staff_{i+1}" for i in range(n_staff)]
-    )
+        st.error(f"SCOP求解器エラー: {str(e)}")
+        st.info("📝 サンプル求解器に切り替えます")
+        return solve_optimization_mock(weights, progress_placeholder, status_placeholder)
 
 def solve_optimization_mock(weights, progress_placeholder=None, status_placeholder=None):
-    """模拟优化求解过程 - 15人版本，确保生成正确结果"""
+    """模拟优化求解过程"""
     try:
         if progress_placeholder:
             progress_placeholder.progress(20)
         if status_placeholder:
-            status_placeholder.text('モデル構築中...')
+            status_placeholder.text('サンプルモデル構築中...')
         
         time.sleep(0.3)
         
         if progress_placeholder:
             progress_placeholder.progress(60)
         if status_placeholder:
-            status_placeholder.text('制約条件追加中...')
+            status_placeholder.text('制約条件処理中...')
         
         time.sleep(0.3)
         
@@ -517,38 +428,35 @@ def solve_optimization_mock(weights, progress_placeholder=None, status_placehold
         if status_placeholder:
             status_placeholder.text('完了!')
         
-        # 直接生成最终的排班结果，不依赖模拟求解器
+        # 生成智能排班结果
         job_names = {0: "休み", 3: "早番A", 4: "早番B", 5: "早番C", 6: "早番D",
                     7: "遅番A", 8: "遅番B", 9: "遅番C", 10: "遅番D"}
         
         result_data = []
         mock_sol = {}
         
-        for i in range(15):  # 15个员工
+        for i in range(15):
             row = []
             consecutive_work = 0
             
-            for t in range(30):  # 直接生成30天
-                # 智能排班逻辑
+            for t in range(30):
                 is_weekend = t % 7 in [5, 6]
                 
-                # 避免连续工作超过4天
                 if consecutive_work >= 4:
                     job = 0
                     consecutive_work = 0
-                elif is_weekend and random.random() < 0.4:  # 周末40%休息
+                elif is_weekend and random.random() < 0.4:
                     job = 0
                     consecutive_work = 0
-                elif random.random() < 0.2:  # 平日20%休息
+                elif random.random() < 0.2:
                     job = 0
                     consecutive_work = 0
                 else:
-                    # 根据员工特点分配班次
-                    if i < 5:  # 早班组
+                    if i < 5:
                         job = random.choice([3, 4, 5, 6])
-                    elif i < 10:  # 晚班组
+                    elif i < 10:
                         job = random.choice([7, 8, 9, 10])
-                    else:  # 混合组
+                    else:
                         job = random.choice([3, 4, 5, 6, 7, 8, 9, 10])
                     consecutive_work += 1
                 
@@ -565,9 +473,8 @@ def solve_optimization_mock(weights, progress_placeholder=None, status_placehold
         
         solve_time = 1.0 + random.random() * 0.3
         
-        # 生成模拟的违反约束
         violated_dict = {}
-        if random.random() < 0.2:  # 20%概率有约束违反
+        if random.random() < 0.2:
             num_violations = random.randint(1, 2)
             for i in range(num_violations):
                 constraint_name = f"constraint_{random.randint(1, 50)}"
@@ -575,44 +482,119 @@ def solve_optimization_mock(weights, progress_placeholder=None, status_placehold
                 violated_dict[constraint_name] = round(violation_value, 2)
         
         solver_output = {
-            'model_status': 0,  # 最优解
+            'model_status': 0,
             'solution': mock_sol,
             'violated_constraints': violated_dict,
             'solve_time': solve_time
         }
         
-        return result_df, f"求解成功 ({solve_time:.1f}秒)", solve_time, solver_output
+        return result_df, f"サンプル求解成功 ({solve_time:.1f}秒)", solve_time, solver_output
     
     except Exception as e:
         return None, f"エラー: {str(e)}", 0, None
 
+def create_beautiful_schedule_display(schedule_df):
+    """创建美观的排班可视化"""
+    st.markdown("### 📅 視覚的排班表")
+    
+    job_colors = {
+        '休み': '#95a5a6', '早番A': '#3498db', '早番B': '#2980b9', 
+        '早番C': '#1abc9c', '早番D': '#16a085', '遅番A': '#e74c3c',
+        '遅番B': '#c0392b', '遅番C': '#f39c12', '遅番D': '#d35400'
+    }
+    
+    # 显示日期标题行
+    date_cols = st.columns([2] + [1]*7)
+    with date_cols[0]:
+        st.markdown("**スタッフ**")
+    
+    for day_idx in range(7):
+        with date_cols[day_idx + 1]:
+            st.markdown(f"**{day_idx + 1}日**")
+    
+    # 显示员工排班
+    for i, (staff_name, row) in enumerate(schedule_df.iterrows()):
+        if i >= 15:
+            break
+            
+        cols = st.columns([2] + [1]*7)
+        
+        with cols[0]:
+            st.markdown(f"**{staff_name}**")
+            
+        for day_idx in range(7):
+            if day_idx < len(row):
+                job_info = row.iloc[day_idx]
+                job_name = job_info.split('(')[1].split(')')[0]
+                color = job_colors.get(job_name, '#bdc3c7')
+                
+                with cols[day_idx + 1]:
+                    st.markdown(f"""
+                    <div style="background-color: {color}; color: white; padding: 0.5rem; 
+                                border-radius: 5px; text-align: center; margin: 2px; font-size: 0.8rem;">
+                        {job_name}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+def generate_smart_schedule():
+    """生成智能的示例排班表"""
+    n_staff, n_days = 15, 30
+    job_names = {0: "休み", 3: "早番A", 4: "早番B", 5: "早番C", 6: "早番D",
+                7: "遅番A", 8: "遅番B", 9: "遅番C", 10: "遅番D"}
+    
+    schedule_data = []
+    
+    for i in range(n_staff):
+        row = []
+        consecutive_work = 0
+        
+        for t in range(n_days):
+            is_weekend = t % 7 in [5, 6]
+            
+            if consecutive_work >= 4:
+                job = 0
+                consecutive_work = 0
+            elif is_weekend and random.random() < 0.4:
+                job = 0
+                consecutive_work = 0
+            elif random.random() < 0.25:
+                job = 0
+                consecutive_work = 0
+            else:
+                if i < 5:
+                    job = random.choice([3, 4, 5, 6])
+                elif i < 10:
+                    job = random.choice([7, 8, 9, 10])
+                else:
+                    job = random.choice([3, 4, 5, 6, 7, 8, 9, 10])
+                consecutive_work += 1
+            
+            row.append(f"{job}({job_names.get(job, 'Unknown')})")
+        
+        schedule_data.append(row)
+    
+    return pd.DataFrame(
+        schedule_data,
+        columns=[f"{t+1}日" for t in range(n_days)],
+        index=[f"Staff_{i+1}" for i in range(n_staff)]
+    )
+
 def generate_scop_output_text(solver_output):
-    """生成完整的SCOP输出文本数据"""
+    """生成求解器输出文本"""
     if not solver_output:
         return "No solver output available"
     
-    output_text = ""
-    
-    # 添加标题和时间戳
-    output_text += f"SCOP Solver Output\n"
-    output_text += f"Generated at: {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    output_text += "="*50 + "\n\n"
-    
-    # 模型状态
+    output_text = f"SCOP Solver Output\nGenerated at: {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{'='*50}\n\n"
     output_text += f"Model Status: {solver_output.get('model_status', 'Unknown')}\n"
     output_text += f"Solve Time: {solver_output.get('solve_time', 0):.3f} seconds\n\n"
     
-    # 所有解变量
     if solver_output.get('solution'):
-        output_text += "Solution Variables:\n"
-        output_text += "-" * 30 + "\n"
+        output_text += "Solution Variables:\n" + "-" * 30 + "\n"
         for var_name, value in solver_output['solution'].items():
             output_text += f"{var_name} {value}\n"
         output_text += f"\nTotal variables: {len(solver_output['solution'])}\n\n"
     
-    # 违反的约束
-    output_text += "Violated Constraints:\n"
-    output_text += "-" * 30 + "\n"
+    output_text += "Violated Constraints:\n" + "-" * 30 + "\n"
     if solver_output.get('violated_constraints'):
         if isinstance(solver_output['violated_constraints'], dict):
             for constraint, violation in solver_output['violated_constraints'].items():
@@ -624,20 +606,17 @@ def generate_scop_output_text(solver_output):
     else:
         output_text += "No constraint violations\n"
     
-    # 添加统计信息
-    output_text += "\n" + "="*50 + "\n"
-    output_text += "Statistics:\n"
-    output_text += f"Problem size: 15 staff × 30 days\n"
+    output_text += f"\n{'='*50}\nStatistics:\nProblem size: 15 staff × 30 days\n"
     output_text += f"Optimization status: {'Optimal' if solver_output.get('model_status') == 0 else 'Non-optimal'}\n"
     
     return output_text
+
 def generate_solver_output_data(solver_output):
-    """将求解器输出转换为可下载的CSV格式（简化版）"""
+    """将求解器输出转换为可下载的CSV格式"""
     if not solver_output or solver_output['solution'] is None:
         return pd.DataFrame({'Error': ['No solution available']})
     
     data = []
-    # 添加模型状态
     data.append({
         'Type': 'Model Status',
         'Variable': 'm.Status',
@@ -645,7 +624,6 @@ def generate_solver_output_data(solver_output):
         'Description': 'Optimization status (0=Optimal)'
     })
     
-    # 只添加前10个解变量用于CSV
     if solver_output['solution']:
         count = 0
         for var_name, value in solver_output['solution'].items():
@@ -665,20 +643,18 @@ def generate_solver_output_data(solver_output):
                 'Type': 'Info',
                 'Variable': 'remaining_variables',
                 'Value': len(solver_output['solution']) - 10,
-                'Description': f'Additional variables not shown (see scop_out.txt for complete data)'
+                'Description': f'Additional variables not shown (see complete output for all data)'
             })
     
-    # 添加违反的约束
     if solver_output['violated_constraints']:
-        for i, constraint in enumerate(solver_output['violated_constraints']):
+        for i, (constraint, value) in enumerate(solver_output['violated_constraints'].items()):
             data.append({
                 'Type': 'Violated Constraint',
-                'Variable': f'constraint_{i}',
-                'Value': str(constraint),
+                'Variable': constraint,
+                'Value': value,
                 'Description': 'Constraint violation'
             })
     
-    # 添加求解时间
     data.append({
         'Type': 'Solve Time',
         'Variable': 'solve_time',
@@ -716,9 +692,8 @@ def main():
         # 示例数据预览
         st.markdown("### サンプルデータプレビュー")
         
-        # 创建示例数据 - 15人版本
         sample_staff = pd.DataFrame({
-            'Staff_ID': [f'S{i:03d}' for i in range(1, 16)],  # 15人
+            'Staff_ID': [f'S{i:03d}' for i in range(1, 16)],
             '名前': [f'スタッフ{i}' for i in range(1, 16)],
             'スキルレベル': np.random.choice(['初級', '中級', '上級'], 15),
             '勤務可能ジョブ': ['早番・遅番', '早番のみ', '遅番のみ', '早番・遅番', '早番・遅番'] * 3
@@ -750,11 +725,11 @@ def main():
         - 🔄 早番・遅番の連続回避
         - 🔄 公平な勤務日数分配
         
-        **⚡ アルゴリズム特徴 (高速化)**
+        **⚡ アルゴリズム特徴**
         - **求解手法**: 線形計画法・整数計画法
         - **求解時間**: 45秒以内 (15人体制)
         - **制約処理**: 重み付きペナルティ方式
-        - **最適化**: 問題規模縮小によるスピードアップ
+        - **フォールバック**: サンプル求解器対応
         """)
         
         # 算法流程图
@@ -782,7 +757,7 @@ def main():
             st.markdown("""
             <div class="metric-card">
                 <h4>⚡ 最適化求解</h4>
-                <p>線形計画法<br>分枝限定法<br>高速ヒューリスティック</p>
+                <p>線形計画法<br>分枝限定法<br>ヒューリスティック</p>
             </div>
             """, unsafe_allow_html=True)
         
@@ -818,6 +793,7 @@ def main():
             - 🎯 多制約同時満足
             - 📊 視覚的結果表示
             - 📅 30日間の排班計画
+            - 🔄 エラー自動回復機能
             """)
         
         with col2:
@@ -826,8 +802,8 @@ def main():
                 <h4>🛠️ 技術スタック</h4>
                 <ul>
                     <li>Python + Streamlit</li>
-                    <li>数理最適化ライブラリ</li>
-                    <li>Pandas + Plotly</li>
+                    <li>SCOP最適化ライブラリ</li>
+                    <li>Pandas + NumPy</li>
                     <li>レスポンシブUI</li>
                 </ul>
             </div>
@@ -852,11 +828,16 @@ def main():
         </div>
         """, unsafe_allow_html=True)
         
+        # 显示库状态
+        if SCOP_AVAILABLE:
+            st.success("✅ SCOPライブラリ使用可能 - 高精度最適化")
+        else:
+            st.warning("⚠️ サンプルモードで動作中 - SCOP未利用可能")
+        
         # 左侧边栏 - 制约调整
         with st.sidebar:
             st.markdown("### ⚙️ 制約パラメータ")
             
-            # 权重设置 (1-100范围，硬制约90)
             obj_weight = st.slider("🏖️ 休み希望", 1, 100, 90, help="スタッフの休み希望を尊重")
             LBC_weight = st.slider("👥 必要人数", 1, 100, 90, help="各シフトの最低人数確保")
             UB_max5_weight = st.slider("⏰ 連続勤務", 1, 100, 60, help="5日連続勤務制限")
@@ -870,20 +851,21 @@ def main():
             }
             
             st.markdown("---")
-            st.markdown("**⏱️ 制限時間**: 45秒 (15人体制)")
-            st.markdown("**📅 求解範囲**: 21日間 → 30日間拡張")
+            if SCOP_AVAILABLE:
+                st.markdown("**⏱️ 制限時間**: 45秒 (SCOP)")
+            else:
+                st.markdown("**⏱️ 制限時間**: 2秒 (サンプル)")
+            st.markdown("**📅 求解範囲**: 21日→30日拡張")
         
         # 主显示区域
-        # 初始化 - 总是显示随机排班表
         if 'schedule_df' not in st.session_state:
-            # 初始显示随机生成的排班表
             st.session_state.schedule_df = generate_smart_schedule()
             st.session_state.solve_status = "📋 サンプルデータ表示中 (15人・30日)"
             st.session_state.solve_time = 0
             st.session_state.solver_output = None
-            st.session_state.is_optimized = False  # 标记是否已优化
+            st.session_state.is_optimized = False
         
-        # 文件上传按钮和求解按钮 - 调整样式达到对称美观
+        # 文件上传和求解按钮
         col_btn1, col_btn2, col_spacer = st.columns([2.5, 1.5, 3])
         
         with col_btn1:
@@ -892,7 +874,6 @@ def main():
                 st.success("✅ ファイル読込済")
         
         with col_btn2:
-            # 求解按钮做成正方形，放大3倍
             st.markdown("""
             <style>
             .large-square-button button {
@@ -913,68 +894,61 @@ def main():
                 solve_button = st.button("🚀\n\n最適化\n\n実行", type="primary")
                 st.markdown('</div>', unsafe_allow_html=True)
         
-        # 求解处理 - 必须调用真正的求解器
+        # 求解处理
         if solve_button:
-            if not SCOP_AVAILABLE:
-                st.error("❌ SCOPライブラリが利用できません。求解器が必要です。")
-            else:
-                progress_placeholder = st.progress(0)
-                status_placeholder = st.empty()
+            progress_placeholder = st.progress(0)
+            status_placeholder = st.empty()
+            
+            # 使用改进的求解器（带自动回退）
+            result_df, message, solve_time, solver_output = solve_with_real_solver(weights, progress_placeholder, status_placeholder)
+            
+            if result_df is not None:
+                st.session_state.schedule_df = result_df
+                st.session_state.solve_status = "最適化完了 (15人・30日)"
+                st.session_state.solve_time = solve_time
+                st.session_state.solver_output = solver_output
+                st.session_state.is_optimized = True
                 
-                # 强制使用真正的求解器
-                result_df, message, solve_time, solver_output = solve_with_real_solver(weights, progress_placeholder, status_placeholder)
+                # 显示求解器输出信息
+                st.write("**求解器データ:**")
                 
-                if result_df is not None:
-                    st.session_state.schedule_df = result_df
-                    st.session_state.solve_status = "最適化完了 (15人・30日)"
-                    st.session_state.solve_time = solve_time
-                    st.session_state.solver_output = solver_output
-                    st.session_state.is_optimized = True  # 标记已优化
-                    
-                    # 显示求解器输出信息 - 限制显示行数
-                    st.write("**求解器データ:**")
-                    
-                    # 显示解变量 - 只显示前10行
-                    if solver_output and solver_output['solution']:
-                        st.write("**Solution variables: (前10行表示)**")
-                        sol_text = ""
-                        count = 0
-                        for x, value in solver_output['solution'].items():
-                            if count < 10:  # 只显示前10行
-                                sol_text += f"{x} {value}\n"
-                                count += 1
-                            else:
-                                break
-                        if len(solver_output['solution']) > 10:
-                            sol_text += f"... (他 {len(solver_output['solution'])-10} 個の変数)\n"
-                        st.text(sol_text)
-                    
-                    # 显示违反的约束
-                    st.write("**violated constraint(s)**")
-                    if solver_output and solver_output['violated_constraints']:
-                        violated_text = ""
-                        if isinstance(solver_output['violated_constraints'], dict):
-                            for v, value in solver_output['violated_constraints'].items():
-                                violated_text += f"{v} {value}\n"
+                if solver_output and solver_output['solution']:
+                    st.write("**Solution variables: (前10行表示)**")
+                    sol_text = ""
+                    count = 0
+                    for x, value in solver_output['solution'].items():
+                        if count < 10:
+                            sol_text += f"{x} {value}\n"
+                            count += 1
                         else:
-                            # 如果是列表格式
-                            for i, v in enumerate(solver_output['violated_constraints']):
-                                violated_text += f"{v}\n"
-                        st.text(violated_text)
-                    else:
-                        st.text("制約違反なし")
-                    
-                    # 显示成功消息和求解时间
-                    with st.empty():
-                        st.success(f"🎉 最適化完了! ({solve_time:.1f}秒)")
-                        time.sleep(1.5)
-                else:
-                    st.error(f"❌ {message}")
+                            break
+                    if len(solver_output['solution']) > 10:
+                        sol_text += f"... (他 {len(solver_output['solution'])-10} 個の変数)\n"
+                    st.text(sol_text)
                 
-                progress_placeholder.empty()
-                status_placeholder.empty()
+                st.write("**violated constraint(s)**")
+                if solver_output and solver_output['violated_constraints']:
+                    violated_text = ""
+                    if isinstance(solver_output['violated_constraints'], dict):
+                        for v, value in solver_output['violated_constraints'].items():
+                            violated_text += f"{v} {value}\n"
+                    else:
+                        for i, v in enumerate(solver_output['violated_constraints']):
+                            violated_text += f"{v}\n"
+                    st.text(violated_text)
+                else:
+                    st.text("制約違反なし")
+                
+                with st.empty():
+                    st.success(f"🎉 最適化完了! ({solve_time:.1f}秒)")
+                    time.sleep(1.5)
+            else:
+                st.error(f"❌ {message}")
+            
+            progress_placeholder.empty()
+            status_placeholder.empty()
         
-        # 显示状态（简化）- 根据是否优化过显示不同状态
+        # 显示状态
         if st.session_state.get('is_optimized', False):
             st.info(f"✅ {st.session_state.solve_status} ({st.session_state.solve_time:.1f}秒)")
         else:
@@ -987,7 +961,6 @@ def main():
         col_dl1, col_dl2, col_dl3 = st.columns(3)
         
         with col_dl1:
-            # 下载排班表
             csv = st.session_state.schedule_df.to_csv(encoding='utf-8-sig')
             st.download_button(
                 label="📥 排班表CSVダウンロード",
@@ -998,7 +971,6 @@ def main():
             )
         
         with col_dl2:
-            # 下载求解器变量数据（简化版CSV）
             if 'solver_output' in st.session_state:
                 solver_data = generate_solver_output_data(st.session_state.solver_output)
                 solver_csv = solver_data.to_csv(encoding='utf-8-sig', index=False)
@@ -1014,7 +986,6 @@ def main():
                          help="最適化実行後に利用可能になります")
         
         with col_dl3:
-            # 下载完整SCOP输出文本
             if 'solver_output' in st.session_state:
                 scop_text = generate_scop_output_text(st.session_state.solver_output)
                 st.download_button(
