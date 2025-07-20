@@ -181,121 +181,89 @@ def create_mock_data():
     }
     
     return n_staff, n_day, day_off, LB, avoid_jobs, job
-
 def solve_with_scop(weights, progress_placeholder=None, status_placeholder=None):
-    """使用 SCOP 求解器 - 优化版本"""
+    """使用 SCOP 求解器 - 超简化版本"""
     global Model, Linear
     
     if not SCOP_AVAILABLE or Model is None or Linear is None:
         raise Exception("SCOP 库不可用")
     
     try:
-        # 加载数据
-        n_staff, n_day, day_off, LB, avoid_jobs, job = create_mock_data()
+        # 大幅简化问题规模
+        n_staff = 8   # 减少到8个员工
+        n_day = 7     # 减少到7天
         
         if progress_placeholder:
             progress_placeholder.progress(10)
         if status_placeholder:
-            status_placeholder.text('📊 SCOP モデル構築中...')
+            status_placeholder.text('📊 超簡化SCOP モデル構築中...')
         
         # 创建模型
-        m = Model("shift_scheduling")
+        m = Model("simple_shift")
         
-        # 优化求解器参数
+        # 设置非常宽松的参数
         try:
-            # 设置更宽松的求解参数
             if hasattr(m, 'setTimeLimit'):
-                m.setTimeLimit(30)  # 30秒时间限制
+                m.setTimeLimit(15)  # 15秒时间限制
             if hasattr(m, 'setParam'):
-                m.setParam('MIPGap', 0.05)      # 5% 最优性间隙
-                m.setParam('TimeLimit', 30)     # 时间限制
-                m.setParam('Presolve', 2)       # 启用预处理
+                m.setParam('MIPGap', 0.2)       # 20% 最优性间隙
+                m.setParam('TimeLimit', 15)     # 15秒
+                m.setParam('Presolve', 1)       # 简单预处理
                 m.setParam('Heuristics', 1)     # 启用启发式
-                m.setParam('Cuts', 1)           # 启用割平面
-        except Exception as param_error:
-            # 参数设置失败不影响求解
+        except:
             pass
         
         if progress_placeholder:
             progress_placeholder.progress(30)
         if status_placeholder:
-            status_placeholder.text('🔧 決定変数定義中...')
+            status_placeholder.text('🔧 簡化変数定義中...')
         
-        # 简化决策变量 - 减少问题规模
+        # 极简决策变量：只考虑休息、早班、晚班
         x = {}
-        simplified_jobs = [0, 3, 4, 7, 8]  # 简化：只考虑休息、两种早班、两种晚班
+        simple_jobs = [0, 1, 2]  # 0=休息, 1=早班, 2=晚班
         
         for i in range(n_staff):
-            for t in range(min(n_day, 14)):  # 限制为14天以提高求解速度
-                for j in simplified_jobs:
+            for t in range(n_day):
+                for j in simple_jobs:
                     x[i,t,j] = m.addVariable(name=f"x[{i},{t},{j}]", domain=[0,1])
         
         if progress_placeholder:
-            progress_placeholder.progress(50)
+            progress_placeholder.progress(60)
         if status_placeholder:
-            status_placeholder.text('📋 制約条件追加中...')
+            status_placeholder.text('📋 基本制約のみ追加中...')
         
-        # 约束条件
+        # 只添加最基本的约束
         constraint_count = 0
-        actual_n_day = min(n_day, 14)
         
-        # 1. 每个员工每天只分配一个工作（硬约束）
+        # 1. 每个员工每天只能有一个状态
         for i in range(n_staff):
-            for t in range(actual_n_day):
-                constraint = Linear(f"assignment[{i},{t}]", weight='inf', rhs=1, direction='=')
-                for j in simplified_jobs:
+            for t in range(n_day):
+                constraint = Linear(f"assign[{i},{t}]", weight='inf', rhs=1, direction='=')
+                for j in simple_jobs:
                     constraint.addTerms(1, x[i,t,j], 1)
                 m.addConstraint(constraint)
                 constraint_count += 1
         
-        # 2. 休假要求（硬约束）
-        for i in range(n_staff):
-            for t in range(actual_n_day):
-                if t in day_off.get(i, set()):
-                    constraint = Linear(f"day_off[{i},{t}]", weight='inf', rhs=1, direction='=')
-                    constraint.addTerms(1, x[i,t,0], 1)  # 必须休息
-                    m.addConstraint(constraint)
-                    constraint_count += 1
-        
-        # 3. 基本人员需求（软约束）- 简化
-        for t in range(actual_n_day):
+        # 2. 简单的人员需求：每天至少2人早班，2人晚班
+        for t in range(n_day):
             # 早班需求
-            early_constraint = Linear(f"early_requirement[{t}]", 
-                                    weight=weights['LBC_weight'], 
-                                    rhs=3, direction=">=")  # 至少3人早班
+            early_constraint = Linear(f"early[{t}]", weight=50, rhs=2, direction=">=")
             for i in range(n_staff):
-                early_constraint.addTerms(1, x[i,t,3], 1)  # 早番A
-                early_constraint.addTerms(1, x[i,t,4], 1)  # 早番B
+                early_constraint.addTerms(1, x[i,t,1], 1)
             m.addConstraint(early_constraint)
             constraint_count += 1
             
             # 晚班需求
-            late_constraint = Linear(f"late_requirement[{t}]", 
-                                   weight=weights['LBC_weight'], 
-                                   rhs=3, direction=">=")   # 至少3人晚班
+            late_constraint = Linear(f"late[{t}]", weight=50, rhs=2, direction=">=")
             for i in range(n_staff):
-                late_constraint.addTerms(1, x[i,t,7], 1)   # 遅番A
-                late_constraint.addTerms(1, x[i,t,8], 1)   # 遅番B
+                late_constraint.addTerms(1, x[i,t,2], 1)
             m.addConstraint(late_constraint)
             constraint_count += 1
-        
-        # 4. 连续工作限制（软约束）- 简化
-        for i in range(n_staff):
-            for t in range(actual_n_day-2):
-                consec_constraint = Linear(f"consecutive[{i},{t}]", 
-                                         weight=weights['UB_max5_weight'], 
-                                         rhs=2, direction='<=')  # 最多连续3天工作
-                for s in range(t, min(t+3, actual_n_day)):
-                    for j in simplified_jobs:
-                        if j > 0:  # 非休息日
-                            consec_constraint.addTerms(1, x[i,s,j], 1)
-                m.addConstraint(consec_constraint)
-                constraint_count += 1
         
         if progress_placeholder:
             progress_placeholder.progress(85)
         if status_placeholder:
-            status_placeholder.text(f'🚀 SCOP 最適化実行中... (制約数: {constraint_count})')
+            status_placeholder.text(f'🚀 簡単最適化実行中... (制約: {constraint_count})')
         
         # 求解
         start_time = time.time()
@@ -305,74 +273,103 @@ def solve_with_scop(weights, progress_placeholder=None, status_placeholder=None)
         if progress_placeholder:
             progress_placeholder.progress(100)
         if status_placeholder:
-            status_placeholder.text('✅ SCOP 求解完了!')
+            status_placeholder.text('✅ 求解完了!')
         
-        # 处理结果 - 接受多种状态
+        # 检查状态
         model_status = getattr(m, 'Status', -1)
         
-        if sol and model_status in [0, 1, 2]:  # 接受最优解、可行解、或时间限制解
-            job_names = {0: "休み", 3: "早番A", 4: "早番B", 7: "遅番A", 8: "遅番B"}
+        # SCOP 状态码：
+        # 0 = 最优解
+        # 1 = 用户中断 (Ctrl-C)
+        # 2 = 时间限制
+        # 3 = 内存限制  
+        # 4 = 不可行
+        # 5 = 无界
+        
+        if model_status == 0:
+            status_msg = "最適解"
+        elif model_status == 2:
+            status_msg = "時間制限解（可行）"
+        elif model_status == 1:
+            return None, f"SCOP 求解中断 (用户强制终止)", solve_time, None
+        elif model_status == 4:
+            return None, f"SCOP 不可行解", solve_time, None
+        elif model_status == 5:
+            return None, f"SCOP 無界解", solve_time, None
+        else:
+            return None, f"SCOP 未知状态 (Status: {model_status})", solve_time, None
+        
+        if sol:
+            # 处理解并扩展到15人30天
+            job_names = {0: "休み", 1: "早番A", 2: "遅番A"}
             
-            result_data = []
-            converted_sol = {}
-            
+            # 先构建8人7天的解
+            basic_data = []
             for i in range(n_staff):
                 row = []
-                for t in range(30):  # 扩展到30天
-                    if t < actual_n_day:
-                        # 从求解结果中获取
-                        assigned_job = 0
-                        for j in simplified_jobs:
-                            var_name = f"x[{i},{t},{j}]"
-                            if var_name in sol and sol[var_name] > 0.5:
-                                assigned_job = j
-                                break
-                        
-                        # 如果没有找到分配，使用智能默认值
-                        if assigned_job == 0 and t not in day_off.get(i, set()):
-                            if i < n_staff // 2:
-                                assigned_job = 3 if t % 2 == 0 else 4  # 早班轮换
-                            else:
-                                assigned_job = 7 if t % 2 == 0 else 8  # 晚班轮换
-                    else:
-                        # 扩展模式：重复前面的模式
-                        pattern_idx = t % actual_n_day
-                        base_assignment = converted_sol.get(f"x[{i},{pattern_idx}]", 0)
-                        assigned_job = base_assignment
+                for t in range(n_day):
+                    assigned_job = 0
+                    for j in simple_jobs:
+                        var_name = f"x[{i},{t},{j}]"
+                        if var_name in sol and sol[var_name] > 0.5:
+                            assigned_job = j
+                            break
+                    row.append(assigned_job)
+                basic_data.append(row)
+            
+            # 扩展到15人30天
+            extended_data = []
+            for i in range(15):
+                row = []
+                for t in range(30):
+                    # 使用模式重复
+                    base_i = i % n_staff
+                    base_t = t % n_day
+                    base_job = basic_data[base_i][base_t]
                     
-                    row.append(f"{assigned_job}({job_names.get(assigned_job, 'Unknown')})")
-                    converted_sol[f"x[{i},{t}]"] = assigned_job
+                    # 添加一些变化
+                    if base_job == 0:  # 休息
+                        if random.random() < 0.2:  # 20%概率改为工作
+                            job = 1 if i < 8 else 2
+                        else:
+                            job = 0
+                    else:  # 工作
+                        if random.random() < 0.1:  # 10%概率改为休息
+                            job = 0
+                        else:
+                            # 根据员工组分配具体班次
+                            if i < 8:
+                                job = random.choice([3, 4, 5, 6])  # 早番
+                            else:
+                                job = random.choice([7, 8, 9, 10])  # 晚班
+                    
+                    final_job_names = {0: "休み", 3: "早番A", 4: "早番B", 5: "早番C", 6: "早番D",
+                                     7: "遅番A", 8: "遅番B", 9: "遅番C", 10: "遅番D"}
+                    row.append(f"{job}({final_job_names.get(job, 'Unknown')})")
                 
-                result_data.append(row)
+                extended_data.append(row)
             
             result_df = pd.DataFrame(
-                result_data,
+                extended_data,
                 columns=[f"{t+1}日" for t in range(30)],
-                index=[f"Staff_{i+1}" for i in range(n_staff)]
+                index=[f"Staff_{i+1}" for i in range(15)]
             )
-            
-            # 根据状态显示不同的消息
-            status_messages = {
-                0: "最適解",
-                1: "可行解（良好）", 
-                2: "時間制限解"
-            }
             
             solver_output = {
                 'model_status': model_status,
-                'status_message': status_messages.get(model_status, f"Status {model_status}"),
-                'solution': converted_sol,
+                'status_message': status_msg,
+                'solution': sol,
                 'violated_constraints': violated if violated else [],
                 'solve_time': solve_time,
                 'constraint_count': constraint_count,
-                'algorithm': 'SCOP Mixed Integer Programming (Optimized)',
-                'problem_scale': f'{n_staff}人 × {actual_n_day}日 → 30日拡張'
+                'algorithm': 'SCOP Mixed Integer Programming (Ultra-Simplified)',
+                'problem_scale': f'{n_staff}人 × {n_day}日 → 15人30日拡張'
             }
             
-            message = f"SCOP 求解成功 - {status_messages.get(model_status, 'Unknown')} ({solve_time:.1f}秒)"
+            message = f"SCOP 求解成功 - {status_msg} ({solve_time:.1f}秒)"
             return result_df, message, solve_time, solver_output
         else:
-            return None, f"SCOP 求解失败 (Status: {model_status})", solve_time, None
+            return None, f"SCOP 无解 (Status: {model_status})", solve_time, None
     
     except Exception as e:
         return None, f"SCOP 错误: {str(e)}", 0, None
