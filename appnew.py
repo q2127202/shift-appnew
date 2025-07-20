@@ -8,6 +8,8 @@ import ast
 import datetime as dt
 import time
 import sys  # 添加sys导入
+import os
+os.chmod("scop-linux", 0o755)
 
 # 设置页面配置
 st.set_page_config(
